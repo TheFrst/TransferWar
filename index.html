@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transfer War</title>
+  <style>
+    :root { --bg: #0b1210; --card: #14201c; --card2: #1c2b26; --line: #2a3d36; --text: #eef5f1; --muted: #8fa89e;
+            --gold: #fbbf24; --green: #34d399; --red: #f87171; --blue: #60a5fa; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 560px; margin: 0 auto; padding: 16px;
+           background: var(--bg); color: var(--text); }
+    h1 { margin: 6px 0; } h2 { margin: 18px 0 8px; font-size: 20px; } h3 { margin: 10px 0 6px; }
+    .muted { color: var(--muted); } .small { font-size: 14px; }
+    input, button { font-size: 17px; padding: 12px; margin: 4px 0; width: 100%; border-radius: 12px; border: 0; }
+    input { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+    button { background: var(--gold); color: #1a1200; font-weight: 800; cursor: pointer; }
+    button:disabled { opacity: .35; }
+    button.alt { background: var(--card2); color: var(--text); font-weight: 600; }
+    button.on { outline: 3px solid var(--gold); }
+    button.kick { width: auto; padding: 2px 10px; margin: 0 0 0 8px; font-size: 13px; background: var(--red); }
+    .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin: 10px 0; }
+    .logo { font-size: 40px; font-weight: 900; letter-spacing: -1px; }
+    .logo span { color: var(--gold); }
+    ul.plain { list-style: none; padding: 0; margin: 0; }
+    ul.plain li { padding: 8px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    ul.plain li:last-child { border-bottom: 0; }
+    .pos { display: inline-block; min-width: 40px; text-align: center; border-radius: 6px; padding: 1px 6px; font-size: 12px; font-weight: 800; color: #08110e; }
+    .GK { background: #fbbf24; } .DEF { background: #60a5fa; } .MID { background: #34d399; } .FWD { background: #f87171; }
+
+    /* auction */
+    .lot { text-align: center; background: linear-gradient(160deg, #1d332b, #101a16); border: 2px solid var(--gold); }
+    .lot .rating { font-size: 56px; font-weight: 900; color: var(--gold); line-height: 1; }
+    .lot .pname { font-size: 26px; font-weight: 800; margin: 6px 0 2px; }
+    .lot .price { font-size: 44px; font-weight: 900; margin: 8px 0 0; }
+    .timer { height: 10px; background: var(--card2); border-radius: 99px; overflow: hidden; margin: 10px 0 4px; }
+    .timer div { height: 100%; background: var(--green); width: 100%; transition: width .2s linear; }
+    .timer.warn div { background: var(--red); }
+    #status { font-size: 20px; font-weight: 800; min-height: 28px; }
+    .sold { color: var(--green); } .unsold { color: var(--muted); }
+    .bids { display: flex; gap: 8px; } .bids button { flex: 1; font-size: 18px; }
+    .need { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+    /* pitch */
+    .pitch { background: repeating-linear-gradient(0deg, #1f5135 0 40px, #1b4a30 40px 80px); border-radius: 16px; padding: 10px 6px; border: 2px solid #2f6b47; }
+    .line { display: flex; justify-content: space-around; margin: 10px 0; }
+    .spot { text-align: center; width: 24%; font-size: 12px; }
+    .spot b { display: block; margin: 0 auto 2px; width: 36px; height: 36px; line-height: 36px; border-radius: 50%; background: #fff; color: #111; font-size: 15px; }
+    .spot.empty b { background: rgba(255,255,255,.2); color: transparent; }
+
+    /* season */
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 6px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+    th:nth-child(2), td:nth-child(2) { text-align: left; }
+    tr.me td { color: var(--gold); font-weight: 800; }
+    .match { padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .match:last-child { border-bottom: 0; }
+    .score { display: flex; justify-content: space-between; font-weight: 700; }
+    .score .g { min-width: 50px; text-align: center; color: var(--gold); }
+    .score .t { flex: 1; } .score .t:last-child { text-align: right; }
+    .goals { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .big { font-size: 34px; font-weight: 900; text-align: center; margin: 10px 0; }
+    .award { display: flex; gap: 12px; align-items: center; }
+    .award .e { font-size: 34px; }
+    .lot.elite { border-color: #fbbf24; box-shadow: 0 0 24px rgba(251,191,36,.35); background: linear-gradient(160deg, #3a2f0c, #141006); }
+    .lot.silver { border-color: #cbd5e1; background: linear-gradient(160deg, #26303a, #10151a); }
+    .lot.silver .rating { color: #e2e8f0; }
+    .lot.bronze { border-color: #b7794a; background: linear-gradient(160deg, #2e2116, #120d08); }
+    .lot.bronze .rating { color: #e0a370; }
+    .live { border: 2px solid var(--red); }
+    .live .score { font-size: 18px; margin: 6px 0; }
+    .live .g { font-size: 26px; }
+    .live.goal { animation: goal .6s; }
+    @keyframes goal { 0% { background: #3d2a05; transform: scale(1.03); } 100% { background: var(--card); transform: none; } }
+    .verdict { font-size: 22px; font-weight: 900; text-align: center; margin-top: 6px; }
+    .dim { opacity: .25; transition: opacity .3s; }
+    #tablecard { transition: opacity .3s; }
+    #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #fff; color: #111; font-weight: 800;
+             padding: 12px 18px; border-radius: 99px; box-shadow: 0 8px 30px rgba(0,0,0,.5); z-index: 9; white-space: nowrap; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <section id="home">
+    <div class="logo">Transfer <span>War</span></div>
+    <p class="muted">Bid against your friends for real footballers, build a squad, then watch your season play out.</p>
+    <input id="name" maxlength="16" placeholder="Your name">
+    <input id="club" maxlength="20" placeholder="Your club name (e.g. Kampung FC)">
+    <button id="create">Create room</button>
+    <h2>Got a code?</h2>
+    <input id="joincode" maxlength="4" placeholder="CODE" autocapitalize="characters">
+    <button id="join" class="alt">Join room</button>
+    <div class="card small muted">
+      <b>How it works:</b> everyone gets the same budget. Players come up one at a time and you have a few seconds to outbid each other.
+      Every manager needs 11 players: 1 GK, 4 DEF, 3 MID, 3 FWD. Then the league fills up with AI clubs and a 14-matchday season plus a cup are played out.
+    </div>
+  </section>
+
+  <section id="lobby" hidden>
+    <p class="muted">Room code</p>
+    <h1 class="big" id="code"></h1>
+    <button id="share" class="alt">Share invite link</button>
+    <h2>Managers</h2>
+    <ul class="plain card" id="players"></ul>
+    <div id="settings" class="card">
+      <h3>Player pool</h3>
+      <div class="row" id="pools"></div>
+      <h3>Budget per manager</h3>
+      <div class="row" id="budgets"></div>
+    </div>
+    <button id="start" class="host-only">Start auction</button>
+    <p class="guest-only muted">Waiting for the host to start the auction…</p>
+  </section>
+
+  <section id="auction" hidden>
+    <div class="row small muted"><span id="lotno"></span><span id="poolinfo" style="text-align:right"></span></div>
+    <div class="card lot" id="lotcard">
+      <div class="rating" id="lrating"></div>
+      <div class="pname" id="lname"></div>
+      <div><span class="pos" id="lpos"></span> <span id="lflag"></span></div>
+      <div class="price" id="lprice"></div>
+      <div class="muted" id="lleader"></div>
+      <div class="timer" id="timer"><div></div></div>
+      <div id="status"></div>
+    </div>
+    <div class="bids">
+      <button data-inc="0" id="b0"></button>
+      <button data-inc="1" id="b1"></button>
+      <button data-inc="2" id="b2"></button>
+    </div>
+    <p class="muted small" id="why"></p>
+    <button id="skiplot" class="alt host-only">Skip this player</button>
+    <div class="card">
+      <div class="row"><b id="mybudget"></b><span class="muted" id="mymax" style="text-align:right"></span></div>
+      <div class="need" id="myneeds"></div>
+    </div>
+    <h2>Your squad</h2>
+    <div id="mypitch"></div>
+    <h2>Managers</h2>
+    <ul class="plain card" id="mgrs"></ul>
+    <h2>Recent deals</h2>
+    <ul class="plain card" id="deals"></ul>
+  </section>
+
+  <section id="season" hidden>
+    <h1 id="mdtitle"></h1>
+    <div class="card live" id="live" hidden>
+      <div class="muted small" id="livemin"></div>
+      <div class="score" id="livescore"></div>
+      <div class="goals" id="livegoals"></div>
+      <div class="verdict" id="liveverdict"></div>
+    </div>
+    <div class="card" id="lastresults"></div>
+    <div class="card" id="nextcard">
+      <h3 id="nextmatch"></h3>
+      <p class="muted small">Tactic for this match:</p>
+      <div class="row" id="tactics">
+        <button class="alt" data-tactic="defend">🛡️ Defend</button>
+        <button class="alt" data-tactic="balanced">⚖️ Balanced</button>
+        <button class="alt" data-tactic="attack">⚔️ Attack</button>
+      </div>
+      <p class="muted small" id="tacticnote"></p>
+    </div>
+    <button id="advance" class="host-only"></button>
+    <label class="host-only small muted"><input type="checkbox" id="autoplay" style="width:auto"> Auto-play</label>
+    <p class="guest-only muted" id="hostwait">The host plays each matchday.</p>
+    <h2>League table</h2>
+    <div class="card" id="tablecard"><table id="table"></table></div>
+    <h2>Top scorers</h2>
+    <ul class="plain card" id="scorers"></ul>
+    <h2>Your squad</h2>
+    <div id="seasonpitch"></div>
+  </section>
+
+  <section id="end" hidden>
+    <h1 class="big">🏆 Season over</h1>
+    <div id="awards"></div>
+    <h2>Final table</h2>
+    <div class="card"><table id="ftable"></table></div>
+    <button id="again" class="host-only">Back to lobby</button>
+  </section>
+
+  <div id="toast" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
