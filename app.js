@@ -32,8 +32,9 @@ const LEAGUE_DAYS = 14;                             // 8 teams, home and away
 // Test mode only: add ?fast to a #tes link to run the auction 5× faster.
 const F = TEST && /[?&]fast/.test(location.search) ? 0.2 : 1;
 const FIRST_LOT_MS = 12000 * F, LOT_MS = 9000 * F, BID_MS = 7000 * F;
-const POOLS = { current: "⚽ Current stars", legends: "👑 Legends", mixed: "🌍 Both" };
-const BUDGETS = [150, 200, 300];
+const POOLS = { current: "⚽ Current stars", legends: "👑 Legends", mixed: "🌍 Both", stars: "🌟 Icons only (85+)" };
+const BUDGETS = [100, 150, 200, 300];
+const EMOTES = ["😂", "🔥", "💸", "🤡", "😭", "🫡", "😤", "👀"];
 const AI_NAMES = ["Real Mager", "Kampung United", "Bayern Muncak", "Atlético Santai", "Inter Milan KW",
   "Borussia Dortmundy", "Manchester Siti", "Paris Saint-Gorengan"];
 const FA_FIRST = ["Budi", "Agus", "Joko", "Dedi", "Rudi", "Eko", "Bambang", "Slamet", "Hendra", "Yusuf"];
@@ -49,7 +50,7 @@ const DB = {};
 
 const $ = s => document.querySelector(s);
 let room = null, code = null, offset = 0, unsub = null, autoTimer = null, cache = {};
-let seenLot = null, shownStep = null, liveTimer = null, toastTimer = null;
+let seenLot = null, shownStep = null, liveTimer = null, toastTimer = null, scoutOn = null, lastSec = null, hallSaved = "";
 const done = new Set();
 
 // ---------- helpers ----------
@@ -72,6 +73,49 @@ function toast(t) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { b.hidden = true; }, 2200);
 }
 const buzz = p => { try { navigator.vibrate?.(p); } catch {} };
+// ---------- sound (made live, no files) ----------
+let AC = null;
+function ac() { try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === "suspended") AC.resume(); } catch { AC = null; } return AC; }
+function tone(f, t0, dur, type = "sine", vol = .14, f2) {
+  const a = ac(); if (!a || load("twMute", "false")) return;
+  const o = a.createOscillator(), g = a.createGain(), t = a.currentTime + t0;
+  o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(vol, t + .01); g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+  o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + .05);
+}
+function noise(t0, dur, vol = .2, freq = 1200) {
+  const a = ac(); if (!a || load("twMute", "false")) return;
+  const len = a.sampleRate * dur, b = a.createBuffer(1, len, a.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const s = a.createBufferSource(), f = a.createBiquadFilter(), g = a.createGain(), t = a.currentTime + t0;
+  s.buffer = b; f.type = "bandpass"; f.frequency.value = freq; f.Q.value = .7; g.gain.value = vol;
+  s.connect(f); f.connect(g); g.connect(a.destination); s.start(t);
+}
+const SFX = {
+  bid: () => { tone(1320, 0, .09, "square", .07); tone(1760, .07, .14, "square", .07); },
+  tick: () => tone(1000, 0, .05, "square", .05),
+  beat: () => { tone(60, 0, .12, "sine", .3); tone(55, .16, .12, "sine", .22); },
+  sold: () => { noise(0, .12, .5, 400); tone(140, 0, .25, "triangle", .3, 70); [523, 659, 784].forEach((f, i) => tone(f, .2 + i * .08, .3, "triangle", .1)); },
+  unsold: () => tone(300, 0, .5, "sawtooth", .08, 150),
+  outbid: () => { tone(880, 0, .12, "sawtooth", .1); tone(660, .14, .2, "sawtooth", .1); },
+  goal: () => { noise(0, 1.6, .35, 900); noise(.1, 1.2, .2, 2400); },
+  whistle: () => { tone(2600, 0, .25, "sine", .1); tone(2600, .32, .5, "sine", .1); },
+  pop: () => tone(880, 0, .1, "sine", .1, 1320),
+  reveal: () => [392, 523, 659, 784, 1046].forEach((f, i) => tone(f, i * .07, .25, "triangle", .1)),
+};
+function stamp(text, cls) {
+  const box = $("#lotcard"); if (!box) return;
+  const s = el("div", text, "stamp " + (cls || "")); box.append(s); setTimeout(() => s.remove(), 2600);
+}
+// once-per-auction powers, remembered on this phone
+const powKey = () => `twPow_${room.rid}`;
+const powUsed = k => !!load(powKey(), "{}")[k];
+function usePow(k) { const u = load(powKey(), "{}"); u[k] = 1; save(powKey(), u); }
+function floatEmote(name, e) {
+  const f = el("div", null, "emote-fly"); f.append(el("b", e), el("span", name));
+  f.style.left = (10 + Math.random() * 70) + "%"; document.body.append(f); setTimeout(() => f.remove(), 2600);
+}
+let lastEmote = 0;
 const tier = r => r >= 88 ? "elite" : r >= 82 ? "silver" : "bronze";
 function posBadge(pos) { return el("span", pos, "pos " + pos); }
 function myName() { const n = $("#name").value.trim().slice(0, 16); if (n) save("twName", n); return n; }
@@ -153,6 +197,9 @@ function render() {
   if (room.state === "auction") renderAuction();
   if (room.state === "season") renderSeason(isHost);
   if (room.state === "end") renderEnd();
+  const em = room.emote;
+  if (em && em.t !== lastEmote) { if (lastEmote && serverNow() - em.t < 6000) { floatEmote(room.players?.[em.by]?.name || "?", em.e); SFX.pop(); } lastEmote = em.t; }
+  document.querySelectorAll(".emotes").forEach(b => b.hidden = !["auction", "season", "end"].includes(room.state));
   tick();
 }
 
@@ -200,7 +247,7 @@ function needsOf(uid, squads = room.squads) {
 function maxBidOf(uid, squads = room.squads, budgets = room.budgets) {   // keep €1m for every other empty slot
   return (budgets?.[uid] ?? 0) - Math.max(0, SQUAD - squadOf(uid, squads).length - 1);
 }
-const poolIds = () => Object.keys(DB).filter(id => room.pool === "mixed" || id[0] === (room.pool === "legends" ? "l" : "c"));
+const poolIds = () => Object.keys(DB).filter(id => room.pool === "stars" ? DB[id].r >= 85 : room.pool === "mixed" || id[0] === (room.pool === "legends" ? "l" : "c"));
 const startPrice = r => Math.max(1, Math.round((r - 72) * 1.1));
 
 function startAuction() {   // host
@@ -225,11 +272,14 @@ function nextLot(n, squads, budgets, unsold) {
     .sort((a, b) => DB[b].r - DB[a].r);
   if (!cands.length) return null;
   const top = cands.slice(0, Math.max(1, Math.ceil(cands.length / 4)));   // stars come up more often
-  const pid = pick(Math.random() < 0.55 ? top : cands);
-  return { n, pid, price: startPrice(DB[pid].r), ends: serverNow() + (n === 1 ? FIRST_LOT_MS : LOT_MS), closed: false };
+  const mystery = n > 2 && Math.random() < 0.12;   // 🎁 a hidden player: could be a legend, could be a flop
+  const pid = pick(mystery ? cands : Math.random() < 0.55 ? top : cands);
+  const lot = { n, pid, price: mystery ? 1 : startPrice(DB[pid].r), ends: serverNow() + (n === 1 ? FIRST_LOT_MS : LOT_MS), closed: false };
+  if (mystery) lot.mystery = true;
+  return lot;
 }
 
-function bidIncs(lot) { return lot.leader ? [1, 5, 10] : [0, 5, 10]; }
+function bidIncs(lot) { return lot.leader ? [1, 5, 10, 25] : [0, 5, 10, 25]; }
 function whyNot(lot, inc) {   // why I can't bid right now ("" = I can)
   if (!room.managers?.includes(me)) return "You're watching this game.";
   if (lot.closed || lot.ends <= serverNow()) return " ";
@@ -256,6 +306,17 @@ async function bid(i) {
   } catch { flashWhy("Bid didn't go through, try again"); }
 }
 function flashWhy(t) { $("#why").textContent = t; }
+async function timeOut() {   // once per auction: +8 seconds on a lot you're not winning
+  const n = room.lot?.n;
+  if (!n || powUsed("time") || room.lot.leader === me || room.lot.closed) return;
+  try {
+    const res = await runTransaction(roomRef("lot"), lot => {
+      if (!lot || lot.n !== n || lot.closed || lot.ext) return;
+      return { ...lot, ends: Math.max(lot.ends, serverNow()) + 8000 * F, ext: room.players[me]?.name || "Someone" };
+    });
+    if (res.committed) { usePow("time"); SFX.pop(); } else flashWhy("Someone already called a time-out on this player");
+  } catch { flashWhy("Time-out didn't go through"); }
+}
 
 function closeLot(n, retry) {   // host: lock the lot so no more bids get in
   runTransaction(roomRef("lot"), lot => {
@@ -312,6 +373,7 @@ function finishAuction(squads) {   // host: fill empty spots, create the AI club
   const aiSquads = aiNames.map(() => []);
   // The legends pool is small, so in Legends mode AI clubs may also sign current stars.
   if (room.pool === "legends") free.push(...Object.keys(DB).filter(id => id[0] === "c"));
+  if (room.pool === "stars") free.push(...Object.keys(DB).filter(id => DB[id].r < 85).sort((a, b) => DB[b].r - DB[a].r));
   const takeNear = (pos, t) => {
     const opts = free.filter(id => DB[id].pos === pos).sort((a, b) => Math.abs(DB[a].r - t) - Math.abs(DB[b].r - t)).slice(0, 3);
     if (!opts.length) return take(pos);
@@ -334,13 +396,30 @@ function renderAuction() {
     if (prev.leader === me && lot.leader && lot.leader !== me && !lot.closed) { toast("😱 You've been outbid!"); buzz(200); }
     if (!prev.closed && lot.closed && lot.leader === me) { toast(`🎉 You signed ${p.name}!`); buzz([80, 40, 80]); }
   }
-  $("#lotcard").className = "card lot " + tier(p.r);
+  const hide = lot.mystery && !lot.closed && !(scoutOn === lot.n);
+  if (prev && prev.n === lot.n) {
+    if (prev.leader !== lot.leader && lot.leader && !lot.closed) { SFX.bid(); const pr = $("#lprice"); pr.classList.remove("bump"); void pr.offsetWidth; pr.classList.add("bump"); }
+    if (prev.leader === me && lot.leader && lot.leader !== me && !lot.closed) SFX.outbid();
+    if (!prev.closed && lot.closed) {
+      if (lot.leader) { SFX.sold(); stamp("SOLD!", tier(p.r)); if (p.r >= 88) { document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake"); } }
+      else { SFX.unsold(); stamp("UNSOLD", "un"); }
+      if (lot.mystery) { setTimeout(SFX.reveal, 300); stamp(`🎁 It was ${p.name} (${p.r})!`, "rev"); }
+    }
+  }
+  if (prev?.n !== lot.n) document.querySelectorAll("#lotcard .stamp").forEach(x => x.remove());
+  if (prev?.n !== lot.n && lot.mystery) toast("🎁 MYSTERY PLAYER! Only the position is known…");
+  if (prev?.n === lot.n && !prev.ext && lot.ext) toast(`⏰ ${lot.ext} called a TIME-OUT! +8 seconds`);
+  $("#lotcard").className = "card lot " + (hide ? "mystery" : tier(p.r));
   $("#lotno").textContent = `Player #${lot.n}`;
   $("#poolinfo").textContent = POOLS[room.pool];
-  $("#lrating").textContent = p.r;
-  $("#lname").textContent = p.name;
+  $("#lrating").textContent = hide ? "?" : p.r;
+  $("#lname").textContent = hide ? "🎁 Mystery player" : p.name;
   $("#lpos").textContent = p.pos; $("#lpos").className = "pos " + p.pos;
-  $("#lflag").textContent = flag(p.cc);
+  $("#lflag").textContent = hide ? "❓" : flag(p.cc);
+  $("#ptime").disabled = powUsed("time") || !room.managers?.includes(me) || lot.closed || lot.leader === me || !!lot.ext;
+  $("#pscout").disabled = powUsed("scout") || !lot.mystery || lot.closed || scoutOn === lot.n;
+  $("#ptime").textContent = powUsed("time") ? "⏰ Time-out used" : "⏰ Time-out (+8s)";
+  $("#pscout").textContent = powUsed("scout") ? "🕵️ Scout used" : lot.mystery ? "🕵️ Scout the mystery" : "🕵️ Scout (mystery only)";
   $("#lprice").textContent = money(lot.price);
   $("#lleader").textContent = lot.leader ? `Highest bid: ${mgrLabel(lot.leader)}` : "No bids yet. First bid gets him at the start price";
 
@@ -381,11 +460,15 @@ function tick() {
       st.textContent = lot.leader ? `🔨 SOLD to ${room.players[lot.leader]?.club || "?"} for ${money(lot.price)}!` : "Unsold, nobody wanted him";
       st.className = lot.leader ? "sold" : "unsold";
     } else if (left <= 0) st.textContent = "Closing…";
-    else st.textContent = left < 2000 ? "Going twice…" : left < 4000 ? "Going once…" : `${Math.ceil(left / 1000)}s`;
+    else st.textContent = left < 2000 ? "GOING TWICE…" : left < 4000 ? "GOING ONCE…" : `${Math.ceil(left / 1000)}s`;
+    if (!lot.closed && left < 4000 && left > 0) st.className = "going";
     const incs = bidIncs(lot);
-    ["#b0", "#b1", "#b2"].forEach((s, i) => {
+    const sec = Math.ceil(left / 1000);
+    if (!lot.closed && left > 0 && left < 4000 && sec !== lastSec) { lastSec = sec; sec <= 1 ? SFX.beat() : SFX.tick(); }
+    $("#lotcard").classList.toggle("heart", !lot.closed && left > 0 && left < 3000);
+    ["#b0", "#b1", "#b2", "#b3"].forEach((s, i) => {
       const b = $(s);
-      b.textContent = (lot.leader ? `+${incs[i]} → ` : "") + money(lot.price + incs[i]);
+      b.textContent = (i === 3 ? "💣 " : "") + (lot.leader || i === 3 ? `+${incs[i]} → ` : "") + money(lot.price + incs[i]);
       b.disabled = !!whyNot(lot, incs[i]);
     });
     const reason = whyNot(lot, incs[0]);
@@ -464,7 +547,7 @@ function season() {
   const teams = teamList(), byId = Object.fromEntries(teams.map(t => [t.id, t]));
   const fx = fixtures(teams.map(t => t.id));
   const table = Object.fromEntries(teams.map(t => [t.id, { id: t.id, P: 0, W: 0, D: 0, L: 0, GF: 0, GA: 0, Pts: 0 }]));
-  const goals = {}, steps = [];
+  const goals = {}, steps = [], hist = {};
   const tac = (k, id) => room.tactics?.[k]?.[id] || "balanced";
   const count = m => m.ev.forEach(e => { goals[e.pid] = goals[e.pid] || { n: 0, team: e.side === "h" ? m.h : m.a }; goals[e.pid].n++; });
   for (let k = 1; k <= Math.min(room.step, LEAGUE_DAYS); k++) {
@@ -476,6 +559,7 @@ function season() {
       count(m);
     }
     steps.push(ms);
+    sortTable(Object.values(table).map(r => ({ ...r }))).forEach((r, i) => (hist[r.id] ||= []).push(i + 1));
   }
   const rows = sortTable(Object.values(table));
   let semis = null, final = null;
@@ -489,7 +573,7 @@ function season() {
     final = simMatch(byId[h], byId[a], `F${h}${a}`, tac(16, h), tac(16, a), true);
     count(final); steps.push([final]);
   }
-  const val = { teams, byId, fx, rows, goals, steps, semis, final };
+  const val = { teams, byId, fx, rows, goals, steps, semis, final, hist };
   cache = { key, val };
   return val;
 }
@@ -531,20 +615,59 @@ function myNextMatch(S) {
   return null;
 }
 
+// Commentary: the same on every phone, built from the match seed.
+function commentary(m, S) {
+  const rng = rngFor(room.seed + "c" + m.h + m.a + m.hg + m.ag), H = S.byId[m.h], A = S.byId[m.a];
+  const by = (t, pos) => { const o = t.squad.filter(id => P(id).pos === pos); return short(P(o.length ? o[Math.floor(rng() * o.length)] : t.squad[0]).name); };
+  const lines = [{ m: 0, t: `🟢 Kick-off! ${H.name} vs ${A.name}.` }];
+  const GOAL = ["smashes it into the top corner!", "taps it in from close range!", "curls a beauty past the keeper!", "heads it home!", "scores with a stunning volley!", "slots it under the keeper!", "finishes a brilliant team move!"];
+  const MISS = [(a, d, g) => `😱 ${a} hits the post!`, (a, d, g) => `🧤 What a save by ${g} to deny ${a}!`, (a, d, g) => `🟨 Yellow card for ${d}, a cynical foul.`, (a, d, g) => `💨 ${a} skips past two defenders… shot blocked by ${d}!`, (a, d, g) => `📐 Corner. Header from ${d}… just wide!`, (a, d, g) => `🙈 ${a} blazes it over the bar.`];
+  const n = 4 + Math.floor(rng() * 4);
+  for (let i = 0; i < n; i++) { const att = rng() < .5 ? H : A, def = att === H ? A : H; lines.push({ m: 3 + Math.floor(rng() * 86), t: pick2(MISS, rng)(by(att, rng() < .6 ? "FWD" : "MID"), by(def, "DEF"), by(def, "GK")) }); }
+  for (const e of m.ev) lines.push({ m: e.m, goal: e.side, t: `⚽ GOAL! ${short(P(e.pid).name)} ${pick2(GOAL, rng)} (${S.byId[e.side === "h" ? m.h : m.a].name})` });
+  lines.push({ m: 45, t: "⏸️ Half-time." });
+  return lines.sort((a, b) => a.m - b.m || (a.goal ? 1 : 0) - (b.goal ? 1 : 0));
+}
+const pick2 = (a, rng) => a[Math.floor(rng() * a.length)];
+function raceChart(S) {
+  const box = $("#race"); if (!box) return;
+  const ids = Object.keys(S.hist || {}), n = S.teams.length, days = (S.hist[ids[0]] || []).length;
+  box.hidden = days < 2; if (days < 2) return;
+  const W = 320, Hh = 150, x = i => 20 + (W - 30) * i / Math.max(1, LEAGUE_DAYS - 1), y = r => 10 + (Hh - 20) * (r - 1) / (n - 1);
+  const humans = S.teams.filter(t => t.human).map(t => t.id), cols = ["#facc15", "#4ade80", "#60a5fa", "#f472b6", "#fb923c", "#a78bfa", "#2dd4bf", "#f87171"];
+  let svg = `<svg viewBox="0 0 ${W} ${Hh}" class="racesvg">`;
+  for (let r = 1; r <= n; r++) svg += `<text x="4" y="${y(r) + 3}" class="rk">${r}</text>`;
+  S.teams.forEach(t => { if (!humans.includes(t.id)) svg += `<polyline fill="none" stroke="#444" stroke-width="1" points="${S.hist[t.id].map((r, i) => `${x(i)},${y(r)}`).join(" ")}"/>`; });
+  humans.forEach((id, k) => { const c = cols[k % cols.length], pts = S.hist[id]; svg += `<polyline fill="none" stroke="${c}" stroke-width="${id === me ? 3.5 : 2}" points="${pts.map((r, i) => `${x(i)},${y(r)}`).join(" ")}"/><circle cx="${x(pts.length - 1)}" cy="${y(pts[pts.length - 1])}" r="4" fill="${c}"/>`; });
+  svg += `</svg>`;
+  box.innerHTML = `<h3>📈 Title race</h3>${svg}<div class="legend">${humans.map((id, k) => `<span style="color:${cols[k % cols.length]}">● ${S.byId[id].name.replace(/[<>&]/g, "")}</span>`).join(" ")}</div>`;
+}
+function boardMood(S) {
+  const box = $("#board"); if (!box) return;
+  const i = S.rows.findIndex(r => r.id === me); if (i < 0 || room.step < 3 || room.step > LEAGUE_DAYS) { box.hidden = true; return; }
+  const byOvr = [...S.teams].sort((a, b) => strength(b).ovr - strength(a).ovr).findIndex(t => t.id === me);
+  const diff = i - byOvr;   // places worse than your squad deserves
+  const [e, t] = i === 0 ? ["🤩", "The board loves you. Top of the league!"] : diff <= -2 ? ["😁", "Way above expectations. The fans are singing your name."]
+    : diff <= 0 ? ["🙂", "The board is happy."] : diff <= 2 ? ["😬", "The board is getting nervous…"] : ["🔥", "SACK RACE! The board wants results NOW."];
+  box.hidden = false; box.replaceChildren(el("span", e, "e"), el("span", "Board confidence: " + t));
+}
 function playLive(m, S) {   // a quick minute-by-minute replay of one match
   clearInterval(liveTimer);
   $("#live").hidden = false;
   $("#tablecard").classList.add("dim");
   $("#scorers").classList.add("dim");
   $("#lastresults").hidden = true;   // no spoilers until full time
-  const start = Date.now(), D = 4000 * F, mine = m.h === me ? "h" : m.a === me ? "a" : null;
-  let shown = 0;
+  const start = Date.now(), D = 9000 * F, mine = m.h === me ? "h" : m.a === me ? "a" : null;
+  let shown = 0, said = 0;
+  const lines = commentary(m, S);
+  $("#livefeed").replaceChildren();
   const draw = () => {
     const min = Math.min(90, Math.floor((Date.now() - start) / D * 90));
     const evs = m.ev.filter(e => e.m <= min);
     const hg = evs.filter(e => e.side === "h").length, ag = evs.length - hg;
+    while (said < lines.length && lines[said].m <= min) { const L = lines[said++]; const li = el("li", `${L.m}' ${L.t}`, L.goal ? "gl" : ""); $("#livefeed").prepend(li); }
     if (evs.length > shown) {
-      const e = evs[evs.length - 1]; shown = evs.length;
+      const e = evs[evs.length - 1]; shown = evs.length; SFX.goal();
       $("#live").classList.remove("goal"); void $("#live").offsetWidth; $("#live").classList.add("goal");
       if (mine) buzz(e.side === mine ? [60, 30, 60] : 150);
     }
@@ -552,7 +675,8 @@ function playLive(m, S) {   // a quick minute-by-minute replay of one match
     $("#livescore").replaceChildren(el("span", S.byId[m.h].name, "t"), el("span", `${hg}–${ag}`, "g"), el("span", S.byId[m.a].name, "t"));
     $("#livegoals").textContent = evs.map(e => `⚽ ${e.m}' ${short(P(e.pid).name)}`).join("  ");
     if (min >= 90) {
-      clearInterval(liveTimer);
+      clearInterval(liveTimer); SFX.whistle();
+      $("#livefeed").prepend(el("li", "🏁 Full time!"));
       $("#tablecard").classList.remove("dim");
       $("#scorers").classList.remove("dim");
       $("#lastresults").hidden = false;
@@ -597,6 +721,7 @@ function renderSeason(isHost) {
     : k === LEAGUE_DAYS + 1 ? "▶ Play the cup final" : "🏆 See the awards";
 
   $("#table").replaceChildren(tableHead(), ...S.rows.map((r, i) => tableRow(r, i, S)));
+  raceChart(S); boardMood(S);
   const top = Object.entries(S.goals).sort((a, b) => b[1].n - a[1].n).slice(0, 8);
   $("#scorers").replaceChildren(...(top.length ? top.map(([pid, g]) => {
     const li = el("li"); li.append(el("span", `${P(pid).name} (${S.byId[g.team].name})`), el("b", `${g.n} ⚽`)); return li;
@@ -657,7 +782,23 @@ function renderEnd() {
     return c;
   }));
   $("#ftable").replaceChildren(tableHead(), ...S.rows.map((r, i) => tableRow(r, i, S)));
+  if (hallSaved !== room.rid) {
+    hallSaved = room.rid;
+    const h = load("twHall", "[]"); if (!h.some(x => x.rid === room.rid)) { h.unshift({ rid: room.rid, d: new Date().toLocaleDateString(), champ: who(champ), cup: cup ? who(cup) : "-" }); save("twHall", h.slice(0, 20)); }
+    SFX.reveal();
+  }
+  $("#sharewin").onclick = () => {
+    const text = `⚽💰 Transfer War season results\n` + awards.map(([e, t, v]) => `${e} ${t}: ${v}`).join("\n");
+    if (navigator.share) navigator.share({ text: text + "\n\nPlay: " + location.origin + location.pathname }).catch(() => {});
+    else { navigator.clipboard?.writeText(text).catch(() => {}); toast("Copied! Paste it in your group chat."); }
+  };
 }
+function drawHall() {
+  const h = load("twHall", "[]"), box = $("#hall"); if (!box) return;
+  box.hidden = !h.length;
+  $("#halllist").replaceChildren(...h.slice(0, 6).map(x => el("li", `${x.d}: 🏆 ${x.champ} · 🥇 ${x.cup}`)));
+}
+drawHall();
 
 function toLobby() {   // host
   update(roomRef(), { state: "lobby", rid: newId(), lot: null, squads: null, budgets: null, unsold: null, log: null,
@@ -673,7 +814,23 @@ $("#share").addEventListener("click", () => {
   if (navigator.share) navigator.share({ text: `Join my Transfer War! Code: ${code}`, url }).catch(() => {});
   else window.prompt("Copy this link:", url);
 });
-["#b0", "#b1", "#b2"].forEach((s, i) => $(s).addEventListener("click", () => bid(i)));
+["#b0", "#b1", "#b2", "#b3"].forEach((s, i) => $(s).addEventListener("click", () => { ac(); bid(i); }));
+$("#ptime").addEventListener("click", timeOut);
+$("#pscout").addEventListener("click", () => {
+  if (!room?.lot?.mystery || powUsed("scout")) return;
+  usePow("scout"); scoutOn = room.lot.n; const p = P(room.lot.pid);
+  toast(`🕵️ Your scout says: ${p.name}, rated ${p.r}. Only you know.`); render();
+});
+document.querySelectorAll(".emotes").forEach(box => {
+  box.replaceChildren(...EMOTES.map(e => { const b = el("button", e, "alt emo"); b.dataset.emo = e; return b; }));
+  box.addEventListener("click", ev => {
+    const e = ev.target.closest("button")?.dataset.emo; if (!e || !room) return;
+    if (Date.now() - (box._t || 0) < 1500) return; box._t = Date.now();
+    set(roomRef("emote"), { by: me, e, t: serverNow() }).catch(() => {});
+  });
+});
+$("#mute").addEventListener("click", () => { const m = !load("twMute", "false"); save("twMute", m); $("#mute").textContent = m ? "🔇 Sound off" : "🔊 Sound on"; if (!m) SFX.pop(); });
+$("#mute").textContent = load("twMute", "false") ? "🔇 Sound off" : "🔊 Sound on";
 $("#skiplot").addEventListener("click", () => {
   if (room?.lot && !room.lot.closed) update(roomRef("lot"), { ends: serverNow() - 1000 }).catch(fail);
 });
